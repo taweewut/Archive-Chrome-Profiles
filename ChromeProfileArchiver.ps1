@@ -1,14 +1,10 @@
-<# ChromeProfileArchiver.ps1 (Windows)
-   Features: list, archive, restore, cleanup, verify
-   Run:  .\ChromeProfileArchiver.ps1 list
-#>
-
 param(
   [ValidateSet('list','archive','restore','cleanup','verify')]
   [string]$cmd = 'list',
   [string]$ArchiveDir = "$HOME\ChromeProfileBackups",
   [string]$ParkDir = "$HOME\ChromeProfileBackups\_parked",
-  [string]$ChromeDir = "$env:LOCALAPPDATA\Google\Chrome\User Data"
+  [string]$ChromeDir = "$env:LOCALAPPDATA\Google\Chrome\User Data",
+  [string]$ZipPath = ""
 )
 
 function Ensure-Dirs {
@@ -17,7 +13,7 @@ function Ensure-Dirs {
 }
 
 function Get-ProfileFolders {
-  Get-ChildItem -Path $ChromeDir -Directory |
+  Get-ChildItem -Path $ChromeDir -Directory -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -eq 'Default' -or $_.Name -like 'Profile *' } |
     Sort-Object Name
 }
@@ -52,10 +48,8 @@ function List-Profiles {
     }
   }
 
-  # Table
   $rows | Sort-Object folder | Format-Table -AutoSize
 
-  # CSV
   $csvPath = Join-Path $ArchiveDir 'chrome_profile_mapping.csv'
   $rows | Sort-Object folder | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
   Write-Host "`n✔ Mapping saved to: $csvPath"
@@ -64,14 +58,14 @@ function List-Profiles {
 function Archive-Profiles {
   Ensure-Dirs
   $folders = Get-ProfileFolders
-  if ($folders.Count -eq 0) { Write-Error "No Chrome profiles found in $ChromeDir"; return }
+  if (-not $folders -or $folders.Count -eq 0) { Write-Error "No Chrome profiles found in $ChromeDir"; return }
 
   Write-Host ""
   Write-Host "Pick profiles to archive (comma-separated), or 'a' for all:"
-  $i=1; $index=@{}
+  $i=1; $index=@()
   foreach ($f in $folders) {
-    $index[$i]=$f.Name
     "{0,2}) {1}" -f $i, $f.Name
+    $index += $f.Name
     $i++
   }
   $choice = Read-Host "Your choice"
@@ -81,7 +75,10 @@ function Archive-Profiles {
     $selected = @()
     foreach ($p in $choice -split ',') {
       $p = $p.Trim()
-      if ($index.ContainsKey([int]$p)) { $selected += $index[[int]$p] }
+      if ($p -match '^\d+$') {
+        $idx = [int]$p - 1
+        if ($idx -ge 0 -and $idx -lt $index.Count) { $selected += $index[$idx] }
+      }
     }
   }
   if (-not $selected -or $selected.Count -eq 0) { Write-Host "Nothing selected."; return }
@@ -104,13 +101,22 @@ function Archive-Profiles {
 
 function Restore-Profile {
   Ensure-Dirs
+  if ($ZipPath -and (Test-Path $ZipPath)) {
+    Write-Host "Restoring into: $ChromeDir"
+    Expand-Archive -Path $ZipPath -DestinationPath $ChromeDir -Force
+    Write-Host "✔ Restored. Quit & reopen Chrome."
+    return
+  }
+
   $zips = Get-ChildItem -Path $ArchiveDir -Filter *.zip
-  if ($zips.Count -eq 0) { Write-Host "No .zip backups in $ArchiveDir"; return }
-  Write-Host "Backups:"; $i=1; $index=@{}
-  foreach ($z in $zips) { "{0,2}) {1}" -f $i, $z.Name; $index[$i]=$z.FullName; $i++ }
+  if (-not $zips -or $zips.Count -eq 0) { Write-Host "No .zip backups in $ArchiveDir"; return }
+  Write-Host "Backups:"; $i=1; $index=@()
+  foreach ($z in $zips) { "{0,2}) {1}" -f $i, $z.Name; $index += $z.FullName; $i++ }
   $pick = Read-Host "Pick one to restore (number)"
-  if (-not $index.ContainsKey([int]$pick)) { Write-Host "Invalid."; return }
-  $zipfile = $index[[int]$pick]
+  if ($pick -notmatch '^\d+$') { Write-Host "Invalid."; return }
+  $idx = [int]$pick - 1
+  if ($idx -lt 0 -or $idx -ge $index.Count) { Write-Host "Invalid selection."; return }
+  $zipfile = $index[$idx]
   Write-Host "Restoring into: $ChromeDir"
   Expand-Archive -Path $zipfile -DestinationPath $ChromeDir -Force
   Write-Host "✔ Restored. Quit & reopen Chrome."
@@ -131,7 +137,7 @@ function Cleanup-Profiles {
     $data.profile.last_used = ($existing -contains 'Default') ? 'Default' : ($existing | Sort-Object | Select-Object -First 1)
   }
   $data.profile.last_active_profiles = @($data.profile.last_active_profiles | Where-Object { $existing -contains $_ })
-  $json = $data | ConvertTo-Json -Depth 10
+  $json = $data | ConvertTo-Json -Depth 15
   Set-Content -Path $localState -Value $json -Encoding UTF8
   Write-Host "✔ Cleaned Local State. Remaining profiles: $($existing -join ', ')"
 }
@@ -139,10 +145,9 @@ function Cleanup-Profiles {
 function Verify-Archives {
   Ensure-Dirs
   $zips = Get-ChildItem -Path $ArchiveDir -Filter *.zip
-  if ($zips.Count -eq 0) { Write-Host "No .zip files in $ArchiveDir"; return }
+  if (-not $zips -or $zips.Count -eq 0) { Write-Host "No .zip files in $ArchiveDir"; return }
   foreach ($z in $zips) {
     try {
-      # Test by listing; Expand-Archive -WhatIf doesn't test content, so we catch errors via .NET ZipFile
       [System.IO.Compression.ZipFile]::OpenRead($z.FullName).Dispose()
       Write-Host "OK  $($z.Name)"
     } catch {
@@ -158,5 +163,5 @@ switch ($cmd) {
   'restore' { Restore-Profile }
   'cleanup' { Cleanup-Profiles }
   'verify'  { Verify-Archives }
-  default   { Write-Host "Usage: .\ChromeProfileArchiver.ps1 [list|archive|restore|cleanup|verify]" }
+  default   { Write-Host "Usage: .\ChromeProfileArchiver.ps1 [list|archive|restore|cleanup|verify] [-ArchiveDir <path>] [-ParkDir <path>] [-ChromeDir <path>] [-ZipPath <file>]" }
 }
