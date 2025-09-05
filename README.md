@@ -120,8 +120,4 @@ This prunes the Local State file so Chrome only shows folders that still exist.
 
 ✅ With this workflow, you can keep Chrome clean and still preserve your test/demo environments.
 
----
 
-👉 Save this content as `README.md` in your repo root.  
-
-Would you also like me to prepare a **`chrome-profile-archiver.ps1` PowerShell script** so Windows users can run it natively (without Git Bash/WSL)?
